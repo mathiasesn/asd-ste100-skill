@@ -166,9 +166,12 @@ def _breaks_paragraph(prev, line):
             or _is_leaf_line(prev) or _is_leaf_line(line))
 
 
-def _closes_later(run, lines, prev):
-    """True when a backtick run of length RUN is in LINES in the paragraph of PREV."""
-    for line in lines:
+def _closes_later(run, lines, start, prev):
+    """True when a backtick run of length RUN is in LINES[START:] in the paragraph of PREV."""
+    # ponytail: scans to the paragraph end for each unclosed run, so a single
+    # paragraph of N lines with N unclosed runs costs O(N^2). Memoize per length if that shows up.
+    for index in range(start, len(lines)):
+        line = lines[index]
         if _breaks_paragraph(prev, line):
             return False
         if any(len(m.group()) == run for m in BACKTICK_RUN.finditer(line)):
@@ -177,11 +180,11 @@ def _closes_later(run, lines, prev):
     return False
 
 
-def _mask_code_spans(line, open_run, later_lines):
+def _mask_code_spans(line, open_run, lines, next_index):
     """Blank the code spans in LINE, also a span that wraps across lines.
 
     OPEN_RUN is the backtick run length of a span still open from an earlier
-    line, or 0. LATER_LINES are the lines after LINE. As in CommonMark 6.1, a
+    line, or 0. LINES[NEXT_INDEX:] are the lines after LINE. As in CommonMark 6.1, a
     span ends at the next run of the same length, and a run that no later run
     in the paragraph closes is literal text. Return (masked line, open run).
     """
@@ -196,7 +199,7 @@ def _mask_code_spans(line, open_run, later_lines):
                 start, open_run = None, 0
             continue
         if (any(len(r.group()) == n for r in runs[i + 1:])
-                or _closes_later(n, later_lines, line)):
+                or _closes_later(n, lines, next_index, line)):
             start, open_run = run.start(), n
     if start is not None:
         masked[start:] = " " * (len(line) - start)
@@ -646,7 +649,7 @@ def lint(text, filename="<stdin>"):
                 # a table cell holds its own spans, and an HTML block has none
                 line = _mask_non_prose(segment)
             else:
-                masked, open_span = _mask_code_spans(segment, open_span, lines[lineno:])
+                masked, open_span = _mask_code_spans(segment, open_span, lines, lineno)
                 line = _mask_non_prose(masked)
             words_total += len(line.split())
             for rule_id, level, pattern, msg in RULES:
@@ -988,6 +991,9 @@ def selftest():
     assert semicolon_lines("- Run `a;\n  b` now.\n") == []
     assert semicolon_lines("> Run `a;\n> b` now.\n") == []
     assert semicolon_lines("Run ``a`;\nb;`` now.\n- Next `x;` y.") == []
+    # the lookahead starts at the given index of the shared line list, with no slice
+    assert _mask_code_spans("a ` b;", 0, ["x ` y", "", "e ` f"], 1) == ("a ` b;", 0)
+    assert _mask_code_spans("a ` b;", 0, ["x ` y", "", "e ` f"], 0) == ("a     ", 1)
     # per-file labels
     findings, _ = lint("a; b", filename="x.md")
     assert findings[0]["file"] == "x.md"
