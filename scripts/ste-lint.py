@@ -652,10 +652,15 @@ def lint(text, filename="<stdin>"):
                 masked, open_span = _mask_code_spans(segment, open_span, lines, lineno)
                 line = _mask_non_prose(masked)
             words_total += len(line.split())
+            # the blockquote prefix and the list marker are markup, not words in the sentence
+            skip = quote.end() if quote and not is_table else 0
+            marker = None if is_table else ANY_LIST_ITEM.match(segment[skip:])
+            if marker:
+                skip += marker.end()
             for rule_id, level, pattern, msg in RULES:
                 for m in pattern.finditer(line):
                     # the modal may end the line before: "may" / "have failed"
-                    before = (block[-1][2] + " " if block else "") + line[:m.start()]
+                    before = (block[-1][2] + " " if block else "") + line[skip:m.start()]
                     if rule_id == "present-perfect" and MODAL_PERFECT_PREFIX.search(before):
                         continue
                     findings.append({"file": filename, "line": lineno,
@@ -671,11 +676,6 @@ def lint(text, filename="<stdin>"):
                         seen_synonyms[(gi, base)] = (
                             lineno, source_column + m.start() + 1, m.group(0)
                         )
-            # the blockquote prefix and the list marker are markup, not words in the sentence
-            skip = quote.end() if quote and not is_table else 0
-            marker = None if is_table else ANY_LIST_ITEM.match(segment[skip:])
-            if marker:
-                skip += marker.end()
             if line[skip:].strip():
                 block.append((lineno, source_column + skip, line[skip:]))
             if is_table:
@@ -748,6 +748,14 @@ def selftest():
     # a modal in an earlier paragraph does not protect the next one
     findings, _ = lint("It may\n\nhave failed.")
     assert sum(f["rule"] == "present-perfect" for f in findings) == 1, findings
+    # the quote prefix and the list marker are markup: a modal at the end of the
+    # line before still protects the perfect, also in a quote and in a list
+    for text in ("> It may\n> have failed.", "> > It may\n> > have failed.",
+                 "It may\nhave failed.", "- It may\n  have run.", "> - It may\n>   have run."):
+        findings, _ = lint(text)
+        assert not any(f["rule"] == "present-perfect" for f in findings), (text, findings)
+    findings, _ = lint("> It may\n>\n> have failed.")
+    assert [f["line"] for f in findings if f["rule"] == "present-perfect"] == [3], findings
     # an adverb without a modal is not a hedge
     findings, _ = lint("The task already has run. They probably have finished.")
     assert sum(f["rule"] == "present-perfect" for f in findings) == 2, findings
